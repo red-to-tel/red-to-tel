@@ -1,0 +1,10 @@
+services:
+  red-to-tel:
+    build: .
+    image: red-to-tel/red-to-tel:latest
+    container_name: red-to-tel
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./posts:/app/posts
