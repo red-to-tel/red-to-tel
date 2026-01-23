@@ -1,121 +1,163 @@
 #!/usr/bin/env python3
-import praw
-import time
-import apprise
 import os
-import json
-import logging
-import traceback
 import sys
+import json
+import time
 import signal
+import logging
 import threading
-from tenacity import retry, wait_fixed, stop_after_attempt
-from dotenv import load_dotenv
+import traceback
+from datetime import datetime, timedelta
 
-# -----------------------------
-# Load environment variables
-# -----------------------------
+import praw
+import apprise
+from dotenv import load_dotenv
+from tenacity import retry, wait_fixed, stop_after_attempt
+
+# --------------------------------------------------
+# Environment & configuration
+# --------------------------------------------------
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s - %(levelname)s - %(message)s")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "prod").lower()
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 logger = logging.getLogger(__name__)
 
-# Environment
-environment = os.getenv("ENVIRONMENT", "prod")
-logger.info(f"Environment: {environment}")
+logger.info(f"Environment: {ENVIRONMENT}")
+logger.info(f"Log level: {LOG_LEVEL}")
 
-# Reddit credentials
+# --------------------------------------------------
+# Required environment variables
+# --------------------------------------------------
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
 REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET")
 REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT")
 
-# Apprise URL
-if environment == "prod":
+if ENVIRONMENT == "prod":
     APPRISE_URL = os.getenv("APPRISE_URL_PROD")
-elif environment == "stage":
+elif ENVIRONMENT == "stage":
     APPRISE_URL = os.getenv("APPRISE_URL_STAGE")
 else:
-    logger.critical("Unknown environment specified")
-    raise ValueError("Unknown environment specified")
+    logger.critical("Unknown ENVIRONMENT value")
+    sys.exit(1)
 
-# Subreddit to monitor
 SUBREDDIT_NAME = os.getenv("SUBREDDIT_NAME", "soccer")
 
-# Processed posts file
+FLAIR_KEYWORDS = [
+    k.strip().lower()
+    for k in os.getenv("FLAIR_KEYWORD", "media").split(",")
+    if k.strip()
+]
+
 PROCESSED_POSTS_FILE = os.getenv(
     "PROCESSED_POSTS_FILE", "/app/posts/processed_posts.json"
 )
+
+AUTOSAVE_INTERVAL = int(os.getenv("AUTOSAVE_INTERVAL", 60))
+STATE_RETENTION_DAYS = int(os.getenv("STATE_RETENTION_DAYS", 30))
+
 os.makedirs(os.path.dirname(PROCESSED_POSTS_FILE), exist_ok=True)
 
-# Configurable intervals
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", 5))  # check every 5 seconds
-AUTOSAVE_INTERVAL = int(os.getenv("AUTOSAVE_INTERVAL", 60))  # seconds
-FLAIR_KEYWORD = os.getenv("FLAIR_KEYWORD", "media").lower()
-
-# -----------------------------
-# Validate required env vars
-# -----------------------------
-if not all([REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USER_AGENT, APPRISE_URL]):
-    logger.critical("Missing required environment variables. Exiting.")
+if not all(
+    [
+        REDDIT_CLIENT_ID,
+        REDDIT_CLIENT_SECRET,
+        REDDIT_USER_AGENT,
+        APPRISE_URL,
+    ]
+):
+    logger.critical("Missing required environment variables")
     sys.exit(1)
 
-# -----------------------------
-# Initialize Reddit and Apprise
-# -----------------------------
-reddit = praw.Reddit(client_id=REDDIT_CLIENT_ID,
-                     client_secret=REDDIT_CLIENT_SECRET,
-                     user_agent=REDDIT_USER_AGENT)
+# --------------------------------------------------
+# Reddit & Apprise initialization
+# --------------------------------------------------
+reddit = praw.Reddit(
+    client_id=REDDIT_CLIENT_ID,
+    client_secret=REDDIT_CLIENT_SECRET,
+    user_agent=REDDIT_USER_AGENT,
+)
+
+subreddit = reddit.subreddit(SUBREDDIT_NAME)
 
 apobj = apprise.Apprise()
 apobj.add(APPRISE_URL)
 
-subreddit = reddit.subreddit(SUBREDDIT_NAME)
+# --------------------------------------------------
+# State handling
+# --------------------------------------------------
+lock = threading.Lock()
+processed_posts: dict[str, str] = {}
 
-MIN_DELAY = 2  # Delay for errors
+def load_state() -> dict:
+    if not os.path.exists(PROCESSED_POSTS_FILE):
+        return {}
+    try:
+        with open(PROCESSED_POSTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception as e:
+        logger.error(f"Failed to load state: {e}")
+    return {}
 
-# -----------------------------
-# Load / Save processed posts
-# -----------------------------
-def load_processed_posts():
-    if os.path.exists(PROCESSED_POSTS_FILE):
+def save_state():
+    with lock:
         try:
-            with open(PROCESSED_POSTS_FILE, "r", encoding="utf-8") as f:
-                return set(json.load(f))
+            with open(PROCESSED_POSTS_FILE, "w", encoding="utf-8") as f:
+                json.dump(processed_posts, f)
+            logger.debug("State saved")
         except Exception as e:
-            logger.error(f"Failed to load processed posts: {e}")
-    return set()
+            logger.error(f"Failed to save state: {e}")
 
-def save_processed_posts(processed_posts):
-    try:
-        with open(PROCESSED_POSTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(list(processed_posts), f)
-        logger.debug("Processed posts saved.")
-    except Exception as e:
-        logger.error(f"Failed to save processed posts: {e}")
+def prune_state():
+    if STATE_RETENTION_DAYS <= 0:
+        return
+    cutoff = datetime.utcnow() - timedelta(days=STATE_RETENTION_DAYS)
+    with lock:
+        before = len(processed_posts)
+        processed_posts_copy = dict(processed_posts)
+        for post_id, ts in processed_posts_copy.items():
+            try:
+                if datetime.fromisoformat(ts) < cutoff:
+                    processed_posts.pop(post_id, None)
+            except Exception:
+                processed_posts.pop(post_id, None)
+        after = len(processed_posts)
+        if before != after:
+            logger.info(f"Pruned {before - after} old processed posts")
 
-# -----------------------------
-# Fetch new posts
-# -----------------------------
-@retry(wait=wait_fixed(2), stop=stop_after_attempt(5))
-def fetch_new_posts(processed_posts):
-    try:
-        new_posts = [
-            s for s in subreddit.new(limit=20)
-            if s.id not in processed_posts
-            and FLAIR_KEYWORD in (s.link_flair_text or "").lower()
-        ]
-        if new_posts:
-            logger.info(f"Found {len(new_posts)} new post(s).")
-        return new_posts
-    except Exception as e:
-        logger.error(f"Error fetching new posts: {e}")
-        raise
+# --------------------------------------------------
+# Autosave thread
+# --------------------------------------------------
+def autosave_loop():
+    while True:
+        time.sleep(AUTOSAVE_INTERVAL)
+        prune_state()
+        save_state()
 
-# -----------------------------
-# Send notification (clean spacing for Telegram)
-# -----------------------------
+autosave_thread = threading.Thread(target=autosave_loop, daemon=True)
+autosave_thread.start()
+
+# --------------------------------------------------
+# Graceful shutdown
+# --------------------------------------------------
+def shutdown_handler(signum, frame):
+    logger.info(f"Received signal {signum}, shutting down")
+    save_state()
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, shutdown_handler)
+signal.signal(signal.SIGINT, shutdown_handler)
+
+# --------------------------------------------------
+# Notification
+# --------------------------------------------------
 @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
 def send_notification(submission):
     body = (
@@ -127,74 +169,53 @@ def send_notification(submission):
     apobj.notify(
         body=body,
         notify_type=apprise.NotifyType.INFO,
-        body_format=apprise.NotifyFormat.MARKDOWN
+        body_format=apprise.NotifyFormat.MARKDOWN,
     )
-    logger.info(f"Notification sent for: {submission.title}")
 
-# -----------------------------
-# Globals and autosave
-# -----------------------------
-processed_posts = None
-lock = threading.Lock()
+    logger.info(f"Notification sent: {submission.id}")
 
-def autosave_loop():
-    global processed_posts
-    while True:
-        if processed_posts is not None:
-            with lock:
-                save_processed_posts(processed_posts)
-        time.sleep(AUTOSAVE_INTERVAL)
+# --------------------------------------------------
+# Helper
+# --------------------------------------------------
+def flair_matches(submission) -> bool:
+    flair = (submission.link_flair_text or "").lower()
+    return any(k in flair for k in FLAIR_KEYWORDS)
 
-autosave_thread = threading.Thread(target=autosave_loop, daemon=True)
-autosave_thread.start()
-
-# -----------------------------
-# Graceful shutdown
-# -----------------------------
-def handle_shutdown(signum, frame):
-    logger.info(f"Received shutdown signal ({signum}). Saving state and exiting...")
-    global processed_posts
-    if processed_posts is not None:
-        with lock:
-            save_processed_posts(processed_posts)
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, handle_shutdown)
-signal.signal(signal.SIGINT, handle_shutdown)
-
-# -----------------------------
-# Main loop
-# -----------------------------
+# --------------------------------------------------
+# Main loop (STREAM-BASED)
+# --------------------------------------------------
 def main():
     global processed_posts
-    processed_posts = load_processed_posts()
+
+    processed_posts = load_state()
+    logger.info(f"Loaded {len(processed_posts)} processed posts")
 
     try:
-        while True:
-            logger.debug("Polling subreddit for new posts...")
+        for submission in subreddit.stream.submissions(skip_existing=True):
             try:
-                media_posts = fetch_new_posts(processed_posts)
-                for submission in reversed(media_posts):
-                    send_notification(submission)
-                    with lock:
-                        processed_posts.add(submission.id)
-                    time.sleep(1)
+                with lock:
+                    if submission.id in processed_posts:
+                        continue
+
+                if not flair_matches(submission):
+                    continue
+
+                send_notification(submission)
+
+                with lock:
+                    processed_posts[submission.id] = datetime.utcnow().isoformat()
 
             except Exception as e:
-                logger.error(f"An error occurred while fetching/sending: {e}")
+                logger.error(f"Error processing submission: {e}")
                 logger.error(traceback.format_exc())
-                time.sleep(MIN_DELAY)
-
-            time.sleep(POLL_INTERVAL)
+                time.sleep(2)
 
     finally:
-        logger.info("Exiting main loop — saving processed posts.")
-        if processed_posts is not None:
-            with lock:
-                save_processed_posts(processed_posts)
+        logger.info("Exiting main loop")
+        save_state()
 
-# -----------------------------
+# --------------------------------------------------
 # Entry point
-# -----------------------------
+# --------------------------------------------------
 if __name__ == "__main__":
     main()

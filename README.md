@@ -1,90 +1,119 @@
+# Reddit to Telegram Media Notifier
+
 > [!CAUTION]
 > All of the code in this repository was created with AI.
 
-# Reddit to Telegram Media Notifier
+A **Dockerized Reddit bot** that monitors a subreddit for posts with a specific flair and sends notifications via **Apprise** (Telegram, Discord, email, etc.).
 
-A **Dockerized Reddit bot** that monitors a subreddit for posts with a specific flair and sends notifications via Apprise. Designed for reliability, persistence, and easy deployment.
+Designed for:
+
+* low Reddit API usage
+* crash-safe persistence
+* clean Docker deployment
+* zero duplicate notifications
+
+---
+
+## What This Bot Does
+
+* Listens to a subreddit **in real time** using Reddit’s streaming API
+* Filters posts by **flair keyword(s)** (case-insensitive)
+* Sends clean, Markdown-formatted notifications
+* Tracks processed posts to avoid duplicates
+* Persists state safely across restarts
+* Prunes old state automatically to avoid infinite growth
 
 ---
 
 ## Prerequisites
 
-Before you start, make sure you have the following ready:
-
 ### 1. Reddit API
 
 1. Create a Reddit account (if you don’t have one).
-2. Go to [Reddit Apps](https://www.reddit.com/prefs/apps) and create a **new app**:
+2. Go to **Reddit → Preferences → Apps**
+   [https://www.reddit.com/prefs/apps](https://www.reddit.com/prefs/apps)
+3. Create a **new app**:
 
-   * Name: anything you like (e.g., `Reddit Media Notifier`)
-   * Type: **script**
-   * Redirect URI: `http://localhost:8080` (can be anything for scripts)
-3. Note down the **Client ID** (under the app name) and **Client Secret**.
-4. These two values (`REDDIT_CLIENT_ID` & `REDDIT_CLIENT_SECRET`) will go into your `.env` file.
+   * **Name:** anything (e.g. `Reddit Media Notifier`)
+   * **Type:** `script`
+   * **Redirect URI:** `http://localhost:8080` (value doesn’t matter)
+4. Save:
 
-### 2. Telegram Bot
-
-* Create a bot using [BotFather](https://t.me/BotFather).
-* Save the **bot token**; you’ll need it for Apprise.
-
-### 3. Telegram Channel
-
-* Create a channel where the bot will send notifications.
-* Make sure the bot is an **administrator** of that channel (required to post messages).
-
-### 4. Channel ID
-
-* To get the Telegram channel ID:
-
-  1. Forward any message from the channel to [@jsondumpbot](https://t.me/jsondumpbot).
-  2. Look for the `"chat":{"id":-100xxxx}` value.
-  3. Use this numeric ID (including the `-100` prefix) in your Apprise URL.
-
-### 5. Apprise URL
-
-* Format for Telegram:
-
-  ```
-  tgram://<bot-token>/<channel-id>
-  ```
-* Example:
-
-  ```
-  tgram://123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/-1009876543210
-  ```
-
-> \[!IMPORTANT]
-> Make sure the bot is **added to the channel and has permission to post messages**, otherwise notifications will fail.
+   * **Client ID**
+   * **Client Secret**
 
 ---
 
-Wenn du willst, kann ich direkt die **ganze README mit den Reddit-Prerequisites integriert** fertig zusammenstellen, sodass alles sauber sortiert ist. Willst du, dass ich das mache?
+### 2. Telegram Bot
 
+1. Open Telegram and start **@BotFather**
+2. Create a new bot
+3. Save the **bot token**
 
-## Quick Start
+---
 
-Deploy the bot quickly:
+### 3. Telegram Channel
+
+1. Create a Telegram channel
+2. Add your bot as **administrator**
+3. The bot must have permission to post messages
+
+---
+
+### 4. Get the Channel ID
+
+1. Forward any message from your channel to **@jsondumpbot**
+2. Look for:
+
+```
+"chat": { "id": -100xxxxxxxxxx }
+```
+
+3. Copy the full numeric ID (including `-100`)
+
+---
+
+### 5. Apprise URL (Telegram)
+
+Format:
+
+```
+tgram://<bot-token>/<channel-id>
+```
+
+Example:
+
+```
+tgram://123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/-1009876543210
+```
+
+> [!IMPORTANT]
+> The bot **must** be an admin in the channel, or notifications will fail.
+
+---
+
+## Quick Start (Docker)
 
 ```bash
-# 1. Fork or clone the repository
+# Clone the repository
 git clone https://github.com/red-to-tel/red-to-tel.git
 cd red-to-tel
 
-# 2. Create .env file (update credentials)
+# Create environment file
 cp .env.example .env
-nano .env  # edit with Reddit & Apprise credentials
+nano .env
 
-# 3. Create "posts" folder
+# Create persistent state folder
 mkdir -p posts
 
-# 4. Start the Docker container
+# Build & start container
 docker compose up -d --build
 
-# 5. Check logs (optional)
+# View logs
 docker logs -f red-to-tel
 ```
 
-After editing code or dependencies, rebuild with:
+Rebuild after code or dependency changes:
 
 ```bash
 docker compose up -d --build --force-recreate
@@ -94,161 +123,180 @@ docker compose up -d --build --force-recreate
 
 ## Features
 
-* Monitors a specified subreddit for posts with a configurable flair keyword (default: `media`).
-* Sends notifications through Apprise (Telegram, Discord, email, etc.).
-* Tracks processed posts to avoid duplicates.
-* JSON-based state persistence for safety and transparency.
-* Crash-resilient and reboot-safe using Docker and autosave.
-* Configurable intervals and parameters via environment variables.
-* Thread-safe autosave and retry logic for notifications.
-* Easy deployment and updates with Docker Compose.
+* Real-time Reddit monitoring (no aggressive polling)
+* Configurable flair keyword filtering
+* Multi-keyword flair support
+* Markdown notifications via Apprise
+* Duplicate-safe processing
+* JSON-based persistent state
+* Automatic state pruning
+* Graceful shutdown handling
+* Docker-friendly & restart-safe
 
 ---
 
-## How the Python Script Works
+## How the Bot Works (Technical Overview)
 
-1. **Reddit Connection:** Fetches newest posts using [praw](https://praw.readthedocs.io/) and filters by flair keyword.
-2. **Notifications:** Sends Markdown-formatted messages to Apprise-supported services, with retry logic.
-3. **State Persistence:** Tracks processed posts in `posts/processed_posts.json`. Autosaves at a configurable interval.
-4. **Thread-Safe Autosave:** Background thread writes state safely without interrupting main processing.
-5. **Error Handling & Retry:** Uses [tenacity](https://tenacity.readthedocs.io/) for robust retry logic on both Reddit API and notifications.
-6. **Docker-Friendly:** Fully configurable via `.env`. Auto-restarts using Docker restart policies.
+1. **Reddit Stream**
+
+   * Uses `subreddit.stream.submissions(skip_existing=True)`
+   * Reacts instantly to new posts
+   * Minimal Reddit API usage
+
+2. **Filtering**
+
+   * Post flair text is matched against one or more keywords
+   * Case-insensitive substring matching
+
+3. **Notifications**
+
+   * Sent via Apprise with Markdown formatting
+   * Retry logic for transient failures
+
+4. **Persistence**
+
+   * Processed post IDs stored in JSON
+   * Each entry includes a timestamp
+   * Autosaved on interval and shutdown
+
+5. **State Pruning**
+
+   * Old entries automatically removed after N days
+   * Prevents infinite file growth
 
 ---
 
 ## Environment Variables
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root.
 
 ```env
-ENVIRONMENT=prod            # prod or stage
+ENVIRONMENT=prod              # prod or stage
+LOG_LEVEL=INFO                # DEBUG, INFO, WARNING, ERROR
 
-# Reddit API Credentials
+# Reddit API
 REDDIT_CLIENT_ID=your_client_id
 REDDIT_CLIENT_SECRET=your_client_secret
-REDDIT_USER_AGENT=your_user_agent   # Example: script:reddit-notifier:v1.0 (by u/yourusername)
+REDDIT_USER_AGENT=script:reddit-notifier:v1.0 (by u/yourusername)
 
-# Apprise Notification URLs
-APPRISE_URL_PROD=tgram://bot-id/channel-id
-APPRISE_URL_STAGE=tgram://bot-id/channel-id   # Optional staging URL
-# Full list of supported services: https://github.com/caronc/apprise#supported-notifications
+# Apprise
+APPRISE_URL_PROD=tgram://bot-token/channel-id
+APPRISE_URL_STAGE=tgram://bot-token/channel-id
 
-# Subreddit Configuration
-SUBREDDIT_NAME=soccer       # Subreddit to monitor
-FLAIR_KEYWORD=media         # Flair text keyword to filter posts
+# Subreddit
+SUBREDDIT_NAME=soccer
+
+# Flair filtering
+FLAIR_KEYWORD=media            # comma-separated allowed (e.g. media,goal,highlight)
 
 # Persistence
 PROCESSED_POSTS_FILE=/app/posts/processed_posts.json
+STATE_RETENTION_DAYS=30        # days to keep processed posts (0 = keep forever)
 
-# Timing / Intervals
-POLL_INTERVAL=5             # Seconds between Reddit checks (default: 5)
-AUTOSAVE_INTERVAL=60        # Seconds between saving state (default: 60)
+# Autosave
+AUTOSAVE_INTERVAL=60           # seconds
 ```
 
-* **`PROCESSED_POSTS_FILE`** → JSON file where the bot stores processed post IDs. Persistent across restarts.
-* **`POLL_INTERVAL`** → Controls how often the bot polls Reddit for new posts.
-* **`AUTOSAVE_INTERVAL`** → Controls how often the bot writes state to disk.
-* **`FLAIR_KEYWORD`** → The flair text to filter posts by (case-insensitive).
-* **`REDDIT_USER_AGENT`** → Must be unique and descriptive per Reddit’s API rules.
+### Notes
+
+* `FLAIR_KEYWORD` supports **multiple values**, comma-separated
+* `STATE_RETENTION_DAYS` prevents unbounded JSON growth
+* `LOG_LEVEL=DEBUG` is useful for troubleshooting
 
 ---
 
-## How Notifications Look in Telegram
+## Telegram Message Format
 
-Once the bot posts a new media post to your channel, it will appear like this:
+Example notification:
 
 ```
-Club Brugge 4 - [1] Monaco - Ansu Fati  90+2'
+Club Brugge 4 - [1] Monaco - Ansu Fati 90+2'
 https://streamin.one/v/3e772388
 [View on Reddit](https://redd.it/1nkgin4)
 ```
 
+* Line 1: Reddit post title
+* Line 2: Media URL
+* Line 3: Direct Reddit link
 
-* The **title** appears on the first line.
-* The **media URL** is clickable.
-* The **View on Reddit** link lets you jump directly to the Reddit post.
-
-> [!NOTE]
-> Long titles are displayed fully. No emojis or extra formatting; everything is kept clean and readable.
+No emojis. No clutter. Clean and readable.
 
 ---
 
-## Persistent State
+## Persistent State & Docker Volumes
 
-* Stored in `posts/processed_posts.json`.
-* Docker volume ensures persistence across restarts:
+State is stored in:
+
+```
+posts/processed_posts.json
+```
+
+Recommended Docker volume:
 
 ```yaml
 volumes:
   - ./posts:/app/posts
 ```
 
-> [!IMPORTANT]
-> Make sure the left side of the volume path (`./posts`) points to the `posts/` folder in your cloned repo.
+This ensures:
 
-* Autosaves every `AUTOSAVE_INTERVAL` seconds, plus graceful save on shutdown.
+* no duplicate notifications after restart
+* safe recovery after crashes or reboots
 
 ---
 
 ## Updating Python Packages
 
-The bot’s Python dependencies are pinned in `requirements.txt` to ensure stability and reproducible builds. When you want to update packages:
+Dependencies are pinned in `requirements.txt`.
 
-### 1. Check outdated packages
-
-Enter the running container and list outdated packages:
+### Check outdated packages
 
 ```bash
 docker exec -it red-to-tel bash
 pip list --outdated
 ```
 
-This will show all packages with available updates, including `praw`, `apprise`, and their dependencies.
-
-### 2. Update main packages
-
-* Identify the **main packages** you want to update (e.g., `praw`, `apprise`, `tenacity`).
-* Update `requirements.txt` with the new version range, for example:
+### Update main dependencies only
 
 ```text
 praw>=7.9.0,<8.0
 apprise==1.9.4
 tenacity>=9.1.2,<10.0
 python-dotenv==1.1.1
-# keep other sub-dependencies pinned as before
 ```
-> [!TIP]
-> Use `==` for strict pinning, or `>=,<` ranges if you want controlled flexibility.
-Only update main packages; sub-dependencies are updated automatically if compatible.
 
-### 3. Rebuild the container
+Rebuild after updates:
 
 ```bash
 docker compose up -d --build --force-recreate
 ```
 
-### 4. Test the bot
-
-* Check logs to ensure it’s working correctly:
-
-```bash
-docker logs -f red-to-tel
-```
-
-* Verify that notifications are still sent as expected.
-
 > [!WARNING]
-> Always test package updates in a **staging or local environment** before deploying to production.
+> Always test updates in staging before deploying to production.
 
 ---
 
 ## Troubleshooting
 
-* **No notifications:** Verify `.env` credentials and Apprise URL.
-* **Processed posts not updating:** Check volume mapping and permissions.
-* **Bot hammering Reddit API:** Increase `POLL_INTERVAL` in `.env`.
-* **Rate-limited by Reddit:** Increase `POLL_INTERVAL` or reduce the number of posts fetched in `reddit.py`.
-* **Container not restarting on reboot:** Ensure `restart: unless-stopped` is set in `docker-compose.yml`.
+**No notifications**
+
+* Verify Apprise URL
+* Check bot permissions in Telegram channel
+
+**Bot not sending after restart**
+
+* Check volume mapping
+* Verify write permissions for `posts/`
+
+**Rate limits**
+
+* This bot uses Reddit streaming; rate limits are rare
+* If hit, restart container after cooldown
+
+**Debugging**
+
+* Set `LOG_LEVEL=DEBUG`
+* Watch logs with `docker logs -f red-to-tel`
 
 ---
 
@@ -256,10 +304,10 @@ docker logs -f red-to-tel
 
 * Fork the repository
 * Create a feature branch
-* Submit a pull request
+* Open a pull request
 
 ---
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License — see `LICENSE` for details.
