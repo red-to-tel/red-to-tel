@@ -1,25 +1,34 @@
 FROM python:3.13-slim
 
-# create non-root user
-RUN useradd --create-home appuser
+# --- build args to match host user ---
+ARG UID=1001
+ARG GID=1001
+
+# --- create non-root user with matching UID/GID ---
+RUN groupadd -g ${GID} appgroup \
+ && useradd -u ${UID} -g ${GID} -m appuser
+
 WORKDIR /app
 
-# install minimal system dependencies
+# --- install system dependencies ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
  && rm -rf /var/lib/apt/lists/*
 
-# copy dependencies and install
+# --- install Python dependencies ---
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# copy project code
+# --- copy application code ---
 COPY . .
 
-# create posts directory for persistence
-RUN mkdir -p /app/posts && chown -R appuser:appuser /app/posts /app
+# --- ensure app directory ownership ---
+RUN mkdir -p /app/posts \
+ && chown -R appuser:appgroup /app
 
+# --- drop privileges ---
 USER appuser
+
 ENV PYTHONUNBUFFERED=1
 
 CMD ["python", "reddit.py"]

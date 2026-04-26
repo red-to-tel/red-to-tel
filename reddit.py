@@ -7,7 +7,7 @@ import signal
 import logging
 import threading
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import praw
 import apprise
@@ -118,13 +118,19 @@ def save_state():
 def prune_state():
     if STATE_RETENTION_DAYS <= 0:
         return
-    cutoff = datetime.utcnow() - timedelta(days=STATE_RETENTION_DAYS)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=STATE_RETENTION_DAYS)
     with lock:
         before = len(processed_posts)
-        processed_posts_copy = dict(processed_posts)
-        for post_id, ts in processed_posts_copy.items():
+        for post_id, ts in list(processed_posts.items()):
             try:
-                if datetime.fromisoformat(ts) < cutoff:
+                post_dt = datetime.fromisoformat(ts)
+
+                # If timestamp is naive, assume UTC
+                if post_dt.tzinfo is None:
+                    post_dt = post_dt.replace(tzinfo=timezone.utc)
+
+                if post_dt < cutoff:
                     processed_posts.pop(post_id, None)
             except Exception:
                 processed_posts.pop(post_id, None)
@@ -203,7 +209,7 @@ def main():
                 send_notification(submission)
 
                 with lock:
-                    processed_posts[submission.id] = datetime.utcnow().isoformat()
+                    processed_posts[submission.id] = datetime.now(timezone.utc).isoformat()
 
             except Exception as e:
                 logger.error(f"Error processing submission: {e}")
