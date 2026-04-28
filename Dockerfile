@@ -23,8 +23,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # --- ensure app directory ownership ---
-RUN mkdir -p /app/posts \
- && chown -R appuser:appgroup /app
+RUN mkdir -p /app/posts /tmp && \
+    chown -R appuser:appgroup /app /tmp
 
 # --- drop privileges ---
 USER appuser
@@ -32,3 +32,4 @@ USER appuser
 ENV PYTHONUNBUFFERED=1
 
 CMD ["python", "reddit.py"]
+

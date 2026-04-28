@@ -11,4 +11,11 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1
+    healthcheck:
+      # Checks if the heartbeat file was modified in the last 30 minutes
+      test: ["CMD-SHELL", "find /tmp/heartbeat -mmin -30 | grep . || exit 1"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
