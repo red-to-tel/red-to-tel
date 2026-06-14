@@ -108,7 +108,7 @@ APPRISE_URL_STAGE=tgram://bot-token/channel-id
 SUBREDDIT_NAME=soccer
 
 # Flair filtering (comma-separated)
-FLAIR_KEYWORD="Match Clips,Goal"
+FLAIR_KEYWORD="Match Clip,Goal Clip,Media"
 
 # Persistence
 PROCESSED_POSTS_FILE=/app/posts/processed_posts.json
